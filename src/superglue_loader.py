@@ -136,8 +136,6 @@ def rte(text_to_text):
         val_list =  [((d['premise'], d['hypothesis']), d['label']) for d in val]
         num_labels = max(train['label']) + 1
     
-    random.seed(42)
-    random.shuffle(train_list)
     return train_list, val_list, num_labels
 
 def wic(text_to_text):
