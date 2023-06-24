@@ -2,10 +2,16 @@
 
 Code for our paper "SMoP: Towards Efficient and Effective Prompt Tuning with Sparse Mixture-of-Prompts".
 
-To run, first download dataset with data/superglue/get_huggingface_superglue.py.
+To run, download the dataset with 
+```
+python data/superglue/get_huggingface_superglue.py.
+```
+
+
 Then, run scripts/train.py with sufficient arguments.
 
-Example run:
+## Example run
+```
 python scripts/train.py --lr 0.5 
                         --batch_size 32 
                         --epoch 50 
@@ -20,3 +26,4 @@ python scripts/train.py --lr 0.5
                         --perturb_router True 
                         --topk 1
 
+```
