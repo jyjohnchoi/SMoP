@@ -101,15 +101,13 @@ def train(args):
     
     if args.method == "prompt-routing":
         if args.stochastic:
-            args_string = f"{lr=} {batch_size=} {epoch=} {args.num_virtual_tokens=} {args.num_virtual_tokens_full=} {args.routing_level=} {args.topk=} central_prompt={bool(args.central_prompt)} stochastic=True {args.random_seed=}"
+            args_string = f"{lr=} {batch_size=} {epoch=} {args.num_virtual_tokens=} {args.num_virtual_tokens_full=} {args.topk=} stochastic=True {args.random_seed=}"
         elif args.gumbel:
-            args_string = f"{lr=} {batch_size=} {epoch=} {args.num_virtual_tokens=} {args.num_virtual_tokens_full=} {args.routing_level=} {args.topk=} central_prompt={bool(args.central_prompt)} gumbel=True {args.random_seed=}"
+            args_string = f"{lr=} {batch_size=} {epoch=} {args.num_virtual_tokens=} {args.num_virtual_tokens_full=} {args.topk=} gumbel=True {args.random_seed=}"
         else:
-            args_string = f"{lr=} {batch_size=} {epoch=} {args.num_virtual_tokens=} {args.num_virtual_tokens_full=} perturb_router={bool(args.perturb_router)} {args.routing_level=} {args.topk=} central_prompt={bool(args.central_prompt)} load_balancing={bool(args.load_balancing)} {args.random_seed=}"
+            args_string = f"{lr=} {batch_size=} {epoch=} {args.num_virtual_tokens=} {args.num_virtual_tokens_full=} perturb_router={bool(args.perturb_router)} {args.topk=} {args.random_seed=}"
     else:
         args_string = f"{lr=} {batch_size=} {epoch=} {args.num_virtual_tokens=} {args.random_seed=}"
-    if args.init_text:
-        args_string += f" init_text='{args.init_text}'"
     args_string = args_string.replace('args.', "")
     tb_writer = SummaryWriter(os.path.join(log_dir, args_string))
     print(args_string)
@@ -133,16 +131,9 @@ def train(args):
     elif args.method == "p-tuning":
         peft_config = PromptEncoderConfig(task_type=task_type, num_virtual_tokens=args.num_virtual_tokens, encoder_hidden_size=128)
     elif args.method == "prompt-tuning":
-        if args.init_text:
-            peft_config = PromptTuningConfig(task_type=task_type, num_virtual_tokens=args.num_virtual_tokens, prompt_tuning_init="TEXT", prompt_tuning_init_text=args.init_text, tokenizer_name_or_path=tokenizer_name_or_path)
-        else:
-            peft_config = PromptTuningConfig(task_type=task_type, num_virtual_tokens=args.num_virtual_tokens)
-    # My methods
+        peft_config = PromptTuningConfig(task_type=task_type, num_virtual_tokens=args.num_virtual_tokens)
     elif args.method == "prompt-routing":
-        if args.init_text:
-            peft_config = PromptRoutingConfig(task_type=task_type, num_virtual_tokens=args.num_virtual_tokens, prompt_routing_init="TEXT", prompt_routing_init_text=args.init_text, tokenizer_name_or_path=tokenizer_name_or_path, num_virtual_tokens_full=args.num_virtual_tokens_full, perturb_router=args.perturb_router, routing_level=args.routing_level, central_prompt=args.central_prompt, topk=args.topk, stochastic=args.stochastic, load_balancing=args.load_balancing)
-        else:
-            peft_config = PromptRoutingConfig(task_type=task_type, num_virtual_tokens=args.num_virtual_tokens, num_virtual_tokens_full=args.num_virtual_tokens_full, perturb_router=args.perturb_router, routing_level=args.routing_level, central_prompt=args.central_prompt, topk=args.topk, stochastic=args.stochastic, gumbel=args.gumbel)
+        peft_config = PromptRoutingConfig(task_type=task_type, num_virtual_tokens=args.num_virtual_tokens, num_virtual_tokens_full=args.num_virtual_tokens_full, perturb_router=args.perturb_router, topk=args.topk, stochastic=args.stochastic, gumbel=args.gumbel)
 
     # Pre-trained model configuraitons
     config = AutoConfig.from_pretrained(model_name_or_path)
@@ -237,7 +228,7 @@ def train(args):
                 model.prompt_encoder.print_and_reset_load_counts() 
             # n = preds.count('entailment')
             # print(n, len(preds) - n)
-        val_score = score(metric, preds, answers, is_wsc=False)#=(args.dataset_name=='wsc'))
+        val_score = score(metric, preds, answers)
         print("Epoch {} | Train loss: {:.5f} | Validation loss: {:.5f} | Validation acc: {:.1f}".format(e+1, train_loss, val_loss, val_score*100))
         is_better_loss = (val_loss < min_val_loss)
         is_better_score = (val_score > max_val_score)
@@ -257,7 +248,7 @@ def train(args):
             print("Updating result due to lower validation loss")
             with torch.no_grad():
                 _, preds, answers = evaluate_epoch(model, scaler, test_dataloader, device, tokenizer, text_to_text, test=True)
-            test_score = score(metric, preds, answers, is_wsc=(args.dataset_name=='wsc'))
+            test_score = score(metric, preds, answers)
             min_val_loss = val_loss
             max_test_result_loss = test_score
             patience_loss = max_patience
@@ -273,9 +264,6 @@ def train(args):
                 print("Patience of loss-based early stopping has reached 0. No more updates.")
 
         if is_better_score and patience_score > 0:
-            # with torch.no_grad():
-            #     _, preds, answers = evaluate_epoch(model, scaler, test_dataloader, device, tokenizer, text_to_text, test=True)
-            # test_score = score(metric, preds, answers, is_wsc=(args.dataset_name=='wsc'))
             print("Updating result due to higher validation score")
 
             max_val_score = val_score
@@ -284,7 +272,7 @@ def train(args):
             except UnboundLocalError:
                 with torch.no_grad():
                     _, preds, answers = evaluate_epoch(model, scaler, test_dataloader, device, tokenizer, text_to_text, test=True)
-                test_score = score(metric, preds, answers, is_wsc=(args.dataset_name=='wsc'))                
+                test_score = score(metric, preds, answers)                
             print("Epoch {} test result: {:.1f}".format(e+1, test_score * 100))
             patience_score = max_patience
             if args.method != "full":
@@ -348,8 +336,6 @@ def train_epoch(model, optimizer, scheduler, scaler, train_dataloader, accum_ste
         labels = train_sample["label"].to(device)
         labels = labels.float() if metric == "spearman" else labels.long()
 
-    
-        
         outputs = model.forward(input_ids=input_ids, attention_mask=att_mask, labels=labels)
         try:
             model.prompt_encoder.save_load_information(ids)
@@ -368,14 +354,7 @@ def train_epoch(model, optimizer, scheduler, scaler, train_dataloader, accum_ste
                 consistency_loss = symmetric_KL_loss(logit1, logit2)
                 loss = lm_loss + lm_loss_2 + args.consistency_alpha * consistency_loss
         else:
-            try:
-                balance_loss = model.prompt_encoder.balancing_loss
-                # print(balance_loss)
-                if balance_loss > 0:
-                    loss = lm_loss + balance_loss
-            except AttributeError:
-                loss = lm_loss
-
+            loss = lm_loss
         scaler.scale(loss).backward()
 
         if torch.isfinite(loss):
@@ -470,7 +449,7 @@ def symmetric_KL_loss(input, target, reduction='batchmean'):
     return 0.5 * loss.sum()
 
 
-def score(metric, preds, answers, is_wsc=False):
+def score(metric, preds, answers,):
     if metric == 'spearman':
         result = spearmanr(preds, answers)[0]
         # print("Spearman correlation: {:.1f}".format(result*100))
@@ -480,10 +459,7 @@ def score(metric, preds, answers, is_wsc=False):
         # print("Matthews correlation: {:.1f}".format(result*100))
 
     elif metric == 'acc':
-        if is_wsc:
-            correct = sum(b in a for a, b in zip(preds, answers))
-        else:
-            correct = sum(a == b for a, b in zip(preds, answers))
+        correct = sum(a == b for a, b in zip(preds, answers))
         correct_zeros = sum(a == b for a, b in zip(preds, answers) if b==0)
         correct_ones = sum(a == b for a, b in zip(preds, answers) if b==1)
 
@@ -577,8 +553,6 @@ if __name__ == "__main__":
     parser.add_argument('--method', type=str, choices=['full', 'lora', 'prefix-tuning', 'p-tuning', 'prompt-tuning', 'prompt-routing']) 
     parser.add_argument('--num_virtual_tokens', type=int, default=None)
 
-    parser.add_argument('--init_text', type=str, default=None)
-
     parser.add_argument('--num_virtual_tokens_full', type=int, default=None)
     parser.add_argument('--routing_level', type=str, default='prompt')
 
@@ -588,10 +562,8 @@ if __name__ == "__main__":
 
     # prompt routing configs
     parser.add_argument('--perturb_router', type=_bool, default=False)
-    parser.add_argument('--central_prompt', type=_bool, default=False)
     parser.add_argument('--topk', type=int, default=1)
     parser.add_argument('--stochastic', type=_bool, default=False)
-    parser.add_argument('--load_balancing', type=_bool, default=True)
     parser.add_argument('--gumbel', type=_bool, default=False)
     args = parser.parse_args()
 

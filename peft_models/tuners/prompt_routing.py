@@ -42,12 +42,6 @@ class PromptRoutingConfig(PromptLearningConfig):
         default=PromptRoutingInit.RANDOM,
         metadata={"help": "How to initialize the prompt tuning parameters"},
     )
-    prompt_routing_init_text: Optional[str] = field(
-        default=None,
-        metadata={
-            "help": "The text to use for prompt tuning initialization. Only used if prompt_tuning_init is `TEXT`"
-        },
-    )
     tokenizer_name_or_path: Optional[str] = field(
         default=None,
         metadata={
@@ -66,35 +60,17 @@ class PromptRoutingConfig(PromptLearningConfig):
             "help": "If true, a random perturbation is added to the routing values"
         }
     )
-    routing_level: Optional[str] = field(
-        default="token",
-        metadata={
-            "help": "If set to 'token', router assigns prompts via token-level. IF set to 'prompt', router assigns a block of tokens as a prompt."
-        }
-    )
     topk: Optional[int] = field(
         default=1,
         metadata={
             "help": "Number of experts to access per sample"
         }
     )
-    central_prompt: Optional[bool] = field(
-        default=False,
-        metadata={
-            "help": "If true, a central prompt is always added to the routed result."
-        }
-    )  
     stochastic: Optional[bool] = field(
         default=True,
         metadata={
             "help": "If true, no router model is used and inputs are concatenated with random prompts. During inference, the sum of the prompt is used"
         }
-    )
-    load_balancing: Optional[bool] = field(
-        default=True, 
-        metadata={
-            "help": "Whether to use the auxiliary load balancing loss or not."
-        }    
     )
     gumbel: Optional[bool] = field(
         default=False, 
@@ -112,44 +88,17 @@ class PromptRoutingEmbedding(torch.nn.Module):
         super().__init__()
         self.config = config
         total_virtual_tokens = config.num_virtual_tokens_full # * config.num_transformer_submodules
-        if config.central_prompt:
-            total_virtual_tokens += config.num_virtual_tokens # adding space for the central prompt
-        
         self.embedding = torch.nn.Embedding(total_virtual_tokens, config.token_dim)
-        if config.prompt_routing_init == PromptRoutingInit.TEXT:
-            from transformers import AutoTokenizer
-            tokenizer = AutoTokenizer.from_pretrained(config.tokenizer_name_or_path, model_max_length=512)
-            # init_text = config.prompt_routing_init_text
-            # init_token_ids = tokenizer(init_text)["input_ids"]
-            init_text_list = ["sentence2 is entailment of sentence1?", "sentence2 is not entailment of sentence1?", "sentence2 is not_entailment of sentence1?", "sentence2 is not not_entailment of sentence1?"]
-            init_token_ids_list = [tokenizer(init_text)["input_ids"] for init_text in init_text_list]
-            # Trim or iterate until num_text_tokens matches total_virtual_tokens
-            for k, init_token_ids in enumerate(init_token_ids_list):
-                num_text_tokens = len(init_token_ids)
-                if num_text_tokens > config.num_virtual_tokens:
-                    init_token_ids = init_token_ids[:config.num_virtual_tokens]
-                elif num_text_tokens < total_virtual_tokens:
-                    num_reps = math.ceil(config.num_virtual_tokens / num_text_tokens)
-                    init_token_ids = init_token_ids * num_reps
-                init_token_ids = init_token_ids[:config.num_virtual_tokens]
-
-                word_embedding_weights = word_embeddings(torch.LongTensor(init_token_ids)).detach().clone()
-                self.embedding.weight.data[config.num_virtual_tokens*k : config.num_virtual_tokens*(k+1)] = word_embedding_weights
         
         # Linear router
         assert config.num_virtual_tokens_full % config.num_virtual_tokens == 0
         self.n_routes = config.num_virtual_tokens_full // config.num_virtual_tokens
-        if self.config.routing_level == "token":
-            linear = torch.nn.Linear(config.token_dim, config.num_virtual_tokens_full, bias=False)
-            # linear.weight.data = self.embedding.weight.data #.transpose(1, 0)
-        elif self.config.routing_level == "prompt":
-            linear = torch.nn.Linear(config.token_dim, self.n_routes, bias=False)
-            # linear.weight.data = torch.mean(self.embedding.weight.data.view(config.token_dim, -1, self.n_routes), dim=1).transpose(1, 0)
+        linear = torch.nn.Linear(config.token_dim, self.n_routes, bias=False)
         
         torch.nn.init.orthogonal_(linear.weight.data)
 
         if self.config.perturb_router:
-            sigma = 1 if self.config.routing_level == 'prompt' else self.config.num_virtual_tokens**0.5
+            sigma = 1
             self.router = torch.nn.Sequential(
                 linear,
                 GaussianNoise(sigma=sigma),
@@ -163,14 +112,9 @@ class PromptRoutingEmbedding(torch.nn.Module):
             )        
         
         self.load_infos = {"Train": defaultdict(list), "Validation": defaultdict(list), "Test": defaultdict(list)}
-        if self.config.routing_level == 'token':
-            self.load_counts = torch.zeros((self.config.num_virtual_tokens_full,), device='cuda')
-            self.probs_sum = torch.zeros_like(self.load_counts)
-        elif self.config.routing_level == 'prompt':
-            self.router.add_module("softmax", torch.nn.Softmax(dim=-1))
-            self.load_counts = torch.zeros((self.n_routes,), device='cuda', requires_grad=False)
-            self.probs_sum = torch.zeros_like(self.load_counts)
-
+        self.router.add_module("softmax", torch.nn.Softmax(dim=-1))
+        self.load_counts = torch.zeros((self.n_routes,), device='cuda', requires_grad=False)
+        self.probs_sum = torch.zeros_like(self.load_counts)
         self.analysis = False
 
 
@@ -184,83 +128,42 @@ class PromptRoutingEmbedding(torch.nn.Module):
         non_zero_count = torch.clamp(torch.sum(attention_mask, dim=1, keepdim=True), min=1)
         sentence_embeds = sentence_sum / non_zero_count.float()
 
-        alpha = 0.01 if self.config.load_balancing else 0
-
-        if self.config.routing_level == 'token':
+        if not self.config.stochastic:
             probs = self.router.forward(sentence_embeds)
-            output_chunked = torch.chunk(output, self.config.num_virtual_tokens, dim=1)
-            probs = torch.cat([F.softmax(p, dim=-1) for p in output_chunked], dim=1)
+            if self.config.gumbel:
+                probs = gumbel_softmax(probs, k=1, hard=True)
             probs_mean = torch.mean(probs, dim=0)
-            load_routes = [torch.argmax(probs[:, i*self.n_routes:(i+1)*self.n_routes], dim=-1) for i in range(self.config.num_virtual_tokens)]
-            load_counts = torch.cat([torch.bincount(load_routes[i], minlength=self.n_routes)/batch_size for i in range(len(load_routes))], dim=-1)
-            self.load_counts = self.load_counts.detach() + load_counts.detach() * batch_size
+            load_routes = torch.argmax(probs.detach(), dim=1)
             self.probs_sum = self.probs_sum.detach() + torch.sum(probs.detach(), dim=0)
+            self.load_routes = load_routes
+            values, idx = torch.topk(probs, k=self.config.topk, dim=-1)
+        else:
+            idx = torch.randint(low=0, high=self.n_routes, size=(batch_size, 1), device='cuda')
         
-            # if self.training:
-            temp = [torch.topk(probs[:, i*self.n_routes:(i+1)*self.n_routes], k=1, dim=-1) for i in range(self.config.num_virtual_tokens)]
-            values, indices = [], []
-            for val, idx in temp:
-                values.append(val)
-                indices.append(idx)
-            values = torch.cat(values, dim=-1)
-            indices = torch.cat(indices, dim=-1) + torch.arange(0, self.config.num_virtual_tokens, device='cuda').unsqueeze(0) * self.n_routes
-            prompt_embeddings = self.embedding(idx) * values.unsqueeze(-1)
-            balancing_factor = probs_mean * load_counts
-
-            self.balancing_loss = alpha * self.n_routes / self.config.num_virtual_tokens * torch.sum(balancing_factor)
-
-        elif self.config.routing_level == 'prompt':
-            if not self.config.stochastic:
-                probs = self.router.forward(sentence_embeds)
-                # If gumbel
-                if self.config.gumbel:
-                    probs = gumbel_softmax(probs, k=1, hard=True)
-                probs_mean = torch.mean(probs, dim=0)
-                load_routes = torch.argmax(probs.detach(), dim=1)
-                self.probs_sum = self.probs_sum.detach() + torch.sum(probs.detach(), dim=0)
-
-                self.load_routes = load_routes
-                # if self.training:
-                values, idx = torch.topk(probs, k=self.config.topk, dim=-1)
+        k = idx.shape[1]
+        load_counts = torch.bincount(torch.flatten(idx), minlength=self.n_routes) / (batch_size * k)
+        self.load_counts = self.load_counts.detach() + load_counts.detach() * batch_size
+        if k == 1:
+            idx = idx*self.config.num_virtual_tokens + torch.arange(0, self.config.num_virtual_tokens, device='cuda').unsqueeze(0)
+        else:
+            idx = (idx*self.config.num_virtual_tokens).unsqueeze(-1) + torch.arange(0, self.config.num_virtual_tokens, device='cuda').unsqueeze(0).unsqueeze(0)
+        
+        if not self.config.stochastic:
+            prompt_embeddings = self.embedding(idx) * values.unsqueeze(-1).unsqueeze(-1)
+            prompt_embeddings = torch.sum(prompt_embeddings, dim=1).squeeze()
+            balancing_factor = probs_mean * load_counts #  probs_mean * load_counts 
+        else:
+            if self.training:
+                prompt_embeddings = self.embedding(idx)
             else:
-                idx = torch.randint(low=0, high=self.n_routes, size=(batch_size, 1), device='cuda')
-            
-            k = idx.shape[1]
-            load_counts = torch.bincount(torch.flatten(idx), minlength=self.n_routes) / (batch_size * k)
-            self.load_counts = self.load_counts.detach() + load_counts.detach() * batch_size
-            if k == 1:
-                idx = idx*self.config.num_virtual_tokens + torch.arange(0, self.config.num_virtual_tokens, device='cuda').unsqueeze(0)
-            else:
-                idx = (idx*self.config.num_virtual_tokens).unsqueeze(-1) + torch.arange(0, self.config.num_virtual_tokens, device='cuda').unsqueeze(0).unsqueeze(0)
-            
-            if not self.config.stochastic:
-                prompt_embeddings = self.embedding(idx) * values.unsqueeze(-1).unsqueeze(-1)
-                prompt_embeddings = torch.sum(prompt_embeddings, dim=1).squeeze()
-                balancing_factor = probs_mean * load_counts #  probs_mean * load_counts 
-                self.balancing_loss = alpha * self.n_routes * torch.sum(balancing_factor)
-            else:
-                if self.training:
-                    prompt_embeddings = self.embedding(idx)
-                else:
-                    prompt_embeddings = torch.mean(torch.stack(torch.chunk(self.embedding.weight.data, self.n_routes, dim=0)), dim=0)
-                    prompt_embeddings = prompt_embeddings.repeat(batch_size, 1, 1)
-
-                self.balancing_loss = 0
-            if prompt_embeddings.dim() == 2:
-                prompt_embeddings = prompt_embeddings.unsqueeze(0)
-
-        if self.config.central_prompt:
-            indices = torch.arange(self.config.num_virtual_tokens_full, self.config.num_virtual_tokens_full + self.config.num_virtual_tokens, device='cuda')
-            indices = indices.unsqueeze(0).expand(batch_size, -1)
-            prompt_embeddings = prompt_embeddings + self.embedding(indices)
-
+                prompt_embeddings = torch.mean(torch.stack(torch.chunk(self.embedding.weight.data, self.n_routes, dim=0)), dim=0)
+                prompt_embeddings = prompt_embeddings.repeat(batch_size, 1, 1)
+        if prompt_embeddings.dim() == 2:
+            prompt_embeddings = prompt_embeddings.unsqueeze(0)
 
         if self.analysis:
-            if self.config.routing_level == 'token':
-                raise NotImplementedError
-            elif self.config.routing_level == 'prompt':
-                indices = torch.full((batch_size, 1), self.prompt_index * self.config.num_virtual_tokens, device='cuda').long() + torch.arange(0, self.config.num_virtual_tokens, device='cuda').repeat(batch_size, 1)
-                prompt_embeddings = self.embedding(indices)# * probs[:, self.prompt_index].unsqueeze(-1).unsqueeze(-1)
+            indices = torch.full((batch_size, 1), self.prompt_index * self.config.num_virtual_tokens, device='cuda').long() + torch.arange(0, self.config.num_virtual_tokens, device='cuda').repeat(batch_size, 1)
+            prompt_embeddings = self.embedding(indices)# * probs[:, self.prompt_index].unsqueeze(-1).unsqueeze(-1)
                 
 
         return prompt_embeddings
