@@ -1,12 +1,12 @@
 # SMoP
 
-Code for our paper "SMoP: Towards Efficient and Effective Prompt Tuning with Sparse Mixture-of-Prompts".
+Code for our paper "SMoP: Towards Efficient and Effective Prompt Tuning with Sparse Mixture-of-Prompts", which will appear in EMNLP 2023.
 
-To run, download the dataset with 
+To run, download the SuperGLUE dataset by
+
 ```
 python data/superglue/get_huggingface_superglue.py.
 ```
-
 
 Then, run scripts/train.py with sufficient arguments.
 
@@ -25,5 +25,4 @@ python scripts/train.py --lr 0.5
                         --num_virtual_tokens_full 20 
                         --perturb_router True 
                         --topk 1
-
 ```
