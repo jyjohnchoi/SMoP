@@ -1,4 +1,4 @@
-# SMoP
+# SMoP (Sparse Mixture-of-Prompts)
 
 Code for our paper "SMoP: Towards Efficient and Effective Prompt Tuning with Sparse Mixture-of-Prompts", which will appear in EMNLP 2023.
 
