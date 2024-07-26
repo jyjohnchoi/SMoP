@@ -1,0 +1,7 @@
+data/superglue/boolq/*
+data/superglue/cb/*
+data/superglue/copa/*
+data/superglue/multirc/*
+data/superglue/rte/*
+data/superglue/wic/*
+log/*

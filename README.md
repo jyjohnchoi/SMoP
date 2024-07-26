@@ -6,8 +6,16 @@ You can find our paper at https://aclanthology.org/2023.emnlp-main.884/
 
 The codebase will be updated for better use as soon as possible.
 
+## Install required modules 
+This codebase is implemented on Python 3.9.18. 
+Run 
+```
+pip install -r requirements.txt
+```
+to download all required modules.
+
 ## Downloading the Dataset
-To run, download the SuperGLUE datasets by
+Download the SuperGLUE datasets by
 ```
 python data/superglue/get_huggingface_superglue.py
 ```
@@ -17,19 +25,7 @@ or use your custom dataset. In that case, you need to create your custom `Datase
 Then, you can execute `scripts/train.py` with training arguments as follows
 
 ```
-python scripts/train.py --lr 0.5 
-                        --batch_size 32 
-                        --epoch 50 
-                        --max_length 512 
-                        --model_name_or_path t5-base 
-                        --tokenizer_name_or_path t5-base 
-                        --warmup_ratio 0.06 
-                        --method prompt-routing 
-                        --dataset_name rte_superglue 
-                        --num_virtual_tokens 5 
-                        --num_virtual_tokens_full 20 
-                        --perturb_router True 
-                        --topk 1
+python scripts/train.py --lr 0.5  --batch_size 32  --epoch 50 --max_length 512  --model_name_or_path t5-base --tokenizer_name_or_path t5-base --warmup_ratio 0.06 --method prompt-routing --dataset_name rte_superglue --num_virtual_tokens 5 --num_virtual_tokens_full 20 --perturb_router True --topk 1
 ```
 
 The training script includes the script for evaluation and exporting the results to `results/{model_name_or_path}/{args.dataset_name}/{args.method}.txt` file. 

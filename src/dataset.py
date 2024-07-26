@@ -1,7 +1,7 @@
 import os
 import sys
-if "peft" not in os.getcwd():
-    os.chdir("peft")
+if "SMoP" not in os.getcwd():
+    os.chdir("SMoP")
 sys.path.append(os.getcwd())
 import random
 from tqdm import tqdm
