@@ -69,4 +69,4 @@ The training script includes the script for evaluation and exporting the results
 Our implementation is largely based on the [HuggingFace PEFT](https://github.com/huggingface/peft) library.
 
 ## Issues
-If you have any issues with our paper or the codebase, please leave an issue in the repository or send an email to johnjames@korea.ac.kr
+If you have any issues with our paper or the codebase, please leave an issue in the repository or send an email to johnjames1128@gmail.com
